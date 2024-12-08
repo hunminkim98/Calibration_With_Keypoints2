@@ -1,299 +1,297 @@
 import numpy as np
 import cv2
-import matplotlib.pyplot as plt
-import time
-import random
 import os
 import json
-import pprint
-import toml
 from scipy.optimize import least_squares
-from scipy.optimize import minimize
-from write_to_toml_v2 import write_to_toml
 
-# 이미지 크기 및 초기 내부 파라미터 설정
 image_size = (1088.0, 1920.0)
-u0 = image_size[0] / 2
-v0 = image_size[1] / 2
+Ks = [np.array([[1824.6, 0.0, 1919.5],
+                [0.0, 1826.7, 1079.5],
+                [0.0, 0.0, 1.0]]) for _ in range(4)]
+image_size = (1088.0, 1920.0)
+u0 = image_size[0]/2
+v0 = image_size[1]/2
+f_init = 1824.6
 
-K1 = np.array([
-    [1824.6097978600892, 0.0, 1919.5],
-    [0.0, 1826.6675222017589, 1079.5],
-    [0.0, 0.0, 1.0]
-])
-
-K2 = np.array([
-    [1824.6097978600892, 0.0, 1919.5],
-    [0.0, 1826.6675222017589, 1079.5],
-    [0.0, 0.0, 1.0]
-])
-
-K3 = np.array([
-    [1824.6097978600892, 0.0, 1919.5],
-    [0.0, 1826.6675222017589, 1079.5],
-    [0.0, 0.0, 1.0]
-])
-
-K4 = np.array([
-    [1824.6097978600892, 0.0, 1919.5],
-    [0.0, 1826.6675222017589, 1079.5],
-    [0.0, 0.0, 1.0]
-])
-
-Ks = [K1, K2, K3, K4]
-
-###################### Data Processing ############################
+# K를 f만 변수로 하고 u0,v0 고정
+def K_from_f(f):
+    return np.array([[f,0,u0],[0,f,v0],[0,0,1]])
 
 def extract_high_confidence_keypoints(cam_dirs, confidence_threshold):
-    """
-    모든 카메라에서 주어진 confidence threshold 이상을 만족하는 키포인트만 추출.
-    """
     high_confidence_keypoints = []
     camera_keypoint_counts = {}
-    
     cam_files = {}
     for cam_dir in cam_dirs:
         cam_name = os.path.basename(cam_dir)
-        cam_files[cam_name] = sorted([os.path.join(cam_dir, f) for f in os.listdir(cam_dir) if f.endswith('.json')])
+        cam_files[cam_name] = sorted([os.path.join(cam_dir,f) for f in os.listdir(cam_dir) if f.endswith('.json')])
         camera_keypoint_counts[cam_name] = 0
-    
-    # 모든 카메라에 대해 같은 프레임 인덱스의 파일을 동시에 로드
+
     for frame_files in zip(*cam_files.values()):
         frame_keypoints = {}
-        
         cam_keypoints = {}
         for cam_name, frame_file in zip(cam_files.keys(), frame_files):
             with open(frame_file, 'r') as file:
                 data = json.load(file)
                 if data['people']:
-                    keypoints = data['people'][0]['pose_keypoints_2d']
-                    keypoints_conf = [(keypoints[i], keypoints[i+1], keypoints[i+2]) for i in range(0, len(keypoints), 3)]
+                    k = data['people'][0]['pose_keypoints_2d']
+                    keypoints_conf = [(k[i], k[i+1], k[i+2]) for i in range(0,len(k),3)]
                     cam_keypoints[cam_name] = keypoints_conf
-        
-        if len(cam_keypoints) > 0 and len(set(len(kp) for kp in cam_keypoints.values())) == 1:
-            # 모든 카메라에서 같은 개수의 키포인트를 갖는 경우
-            for i in range(len(next(iter(cam_keypoints.values())))):
-                if all(cam_keypoints[cam][i][2] >= confidence_threshold for cam in cam_keypoints):
-                    kp_coords = {cam: (cam_keypoints[cam][i][0], cam_keypoints[cam][i][1]) for cam in cam_keypoints}
-                    frame_keypoints[i] = kp_coords
+
+        if cam_keypoints and len(set(len(kp) for kp in cam_keypoints.values()))==1:
+            N = len(next(iter(cam_keypoints.values())))
+            for i in range(N):
+                if all(cam_keypoints[cam][i][2]>=confidence_threshold for cam in cam_keypoints):
+                    coords = {cam:(cam_keypoints[cam][i][0], cam_keypoints[cam][i][1]) for cam in cam_keypoints}
+                    frame_keypoints[i] = coords
                     for cam in cam_keypoints:
-                        camera_keypoint_counts[cam] += 1
-        
+                        camera_keypoint_counts[cam]+=1
         if frame_keypoints:
             high_confidence_keypoints.append(frame_keypoints)
-    
-    print("\nNumber of extracted keypoints per camera:")
+
+    print("\n[INFO] Number of extracted keypoints per camera:")
     for cam_name, count in camera_keypoint_counts.items():
         print(f"{cam_name}: {count} keypoints")
-    
     return high_confidence_keypoints
 
-# 카메라 디렉토리 설정
-cam_dirs = [
-    r'C:\Users\gns15\OneDrive\Desktop\Calibration_with_keypoints\demo_lod\json1',
-    r'C:\Users\gns15\OneDrive\Desktop\Calibration_with_keypoints\demo_lod\json2',
-    r'C:\Users\gns15\OneDrive\Desktop\Calibration_with_keypoints\demo_lod\json3',
-    r'C:\Users\gns15\OneDrive\Desktop\Calibration_with_keypoints\demo_lod\json4'
-]
-
-confidence_threshold = 0.55
-paired_keypoints_list = extract_high_confidence_keypoints(cam_dirs, confidence_threshold)
-
-def extract_correspondences_for_binocular(paired_keypoints_list, cam0_name="json1", cam1_name="json2"):
-    pts_cam0 = []
-    pts_cam1 = []
-    for frame_kps in paired_keypoints_list:
-        for kp_idx, cams_dict in frame_kps.items():
-            if cam0_name in cams_dict and cam1_name in cams_dict:
-                x0, y0 = cams_dict[cam0_name]
-                x1, y1 = cams_dict[cam1_name]
-                pts_cam0.append([x0, y0])
-                pts_cam1.append([x1, y1])
-    pts_cam0 = np.array(pts_cam0, dtype=np.float32)
-    pts_cam1 = np.array(pts_cam1, dtype=np.float32)
-    return pts_cam0, pts_cam1
-
-def compute_fundamental_matrix(pts1, pts2):
+def compute_fundamental_matrix(pts1,pts2):
     F, mask = cv2.findFundamentalMat(pts1, pts2, cv2.FM_RANSAC)
     return F, mask
 
-def compute_essential_matrix(F, K1, K2):
-    return K2.T @ F @ K1
+def compute_essential_matrix(F,K1,K2): 
+    return K2.T@F@K1
 
-def recover_extrinsic_parameters(E, K1, pts1, pts2):
-    _, R, t, mask = cv2.recoverPose(E, pts1, pts2, K1)
-    return R, t, mask
+def recover_extrinsic_parameters(E,K1,pts1,pts2):
+    _, R,t,mask = cv2.recoverPose(E,pts1,pts2,K1)
+    return R,t,mask
 
-def triangulate_points(K1, K2, R, t, pts_cam0, pts_cam1):
-    P0 = K1 @ np.hstack((np.eye(3), np.zeros((3,1))))
-    P1 = K2 @ np.hstack((R, t))
-    points_4D = cv2.triangulatePoints(P0, P1, pts_cam0.T, pts_cam1.T)
-    points_3D = (points_4D[:3,:] / points_4D[3,:]).T
-    return points_3D
+def triangulate_points(K1,K2,R,t,pts0,pts1):
+    P0=K1@np.hstack((np.eye(3),np.zeros((3,1))))
+    P1=K2@np.hstack((R,t))
+    X=cv2.triangulatePoints(P0,P1,pts0.T,pts1.T)
+    return (X[:3]/X[3]).T
 
-def reprojection_residual_intrinsic(intrinsic_params, pts3D, pts2D, R, t, image_size):
-    fx, fy, u0, v0 = intrinsic_params
-    K = np.array([[fx, 0, u0],
-                  [0, fy, v0],
-                  [0,  0,  1]])
-    RT = np.hstack((R, t))
-    pts3D_h = np.hstack([pts3D, np.ones((pts3D.shape[0],1))])
-    proj = (K @ RT @ pts3D_h.T).T
-    proj_2D = proj[:, :2] / proj[:, 2, None]
-    residuals = (proj_2D - pts2D).ravel()
-    return residuals
+# eq(5) 기반 residual: f만 변수, u0,v0고정
+def residual_intrinsic_eq5(f, pts3D, pts2D, R, t, img_size):
+    K = K_from_f(f[0])
+    RT = np.hstack((R,t))
+    P = np.vstack((RT,[0,0,0,1]))
+    ptsW_h = np.hstack([pts3D, np.ones((len(pts3D),1))])
+    ptsC = (P@ptsW_h.T).T
+    Xc=ptsC[:,0]; Yc=ptsC[:,1]; Zc=ptsC[:,2]
+    u=pts2D[:,0]; v=pts2D[:,1]
 
-def optimize_intrinsic_parameters(pts3D, pts2D, R, t, K_init, image_size):
-    fx_init = K_init[0,0]
-    fy_init = K_init[1,1]
-    u0_init = K_init[0,2]
-    v0_init = K_init[1,2]
-    x0 = [fx_init, fy_init, u0_init, v0_init]
-    result = least_squares(reprojection_residual_intrinsic, x0, 
-                           args=(pts3D, pts2D, R, t, image_size))
-    fx, fy, u0, v0 = result.x
-    K_optimized = np.array([[fx, 0, u0],
-                            [0, fy, v0],
-                            [0,  0,  1]])
-    return K_optimized
+    # diff_u = Zc*u - (f*Xc + u0*Zc)
+    # diff_v = Zc*v - (f*Yc + v0*Zc)
+    diff_u = Zc*u - (f[0]*Xc + u0*Zc)
+    diff_v = Zc*v - (f[0]*Yc + v0*Zc)
 
-def reprojection_residual_extrinsic(extrinsic_params, pts3D, pts2D, K):
-    rvec = extrinsic_params[:3]
-    tvec = extrinsic_params[3:]
-    R, _ = cv2.Rodrigues(rvec)
-    pts2D_proj, _ = cv2.projectPoints(pts3D, rvec, tvec, K, None)
-    pts2D_proj = pts2D_proj.reshape(-1,2)
+    return np.hstack([diff_u, diff_v])
+
+def optimize_intrinsic_f(pts3D,pts2D,R,t,f_init,img_size):
+    # f만 최적화
+    res=least_squares(residual_intrinsic_eq5,[f_init],args=(pts3D,pts2D,R,t,img_size))
+    f_opt=res.x[0]
+    return f_opt
+
+def residual_extrinsic_eq9(tvec, pts3D, pts2D, f, R_fixed, cam_id, h):
+    # R_fixed 고정
+    K=K_from_f(f)
+    rvec,_=cv2.Rodrigues(R_fixed)
+    pts2D_proj,_=cv2.projectPoints(pts3D,rvec,tvec,K,None)
+    pts2D_proj=pts2D_proj.reshape(-1,2)
     residuals = (pts2D_proj - pts2D).ravel()
+    if cam_id == 1:
+        norm_t = np.linalg.norm(tvec)
+        penalty = h*(norm_t-1.0)
+        residuals = np.append(residuals, penalty)
     return residuals
 
-def optimize_extrinsic_parameters(pts3D, pts2D, K, R_init, t_init):
-    rvec, _ = cv2.Rodrigues(R_init)
-    x0 = np.hstack((rvec.ravel(), t_init.ravel()))
-    result = least_squares(reprojection_residual_extrinsic, x0, args=(pts3D, pts2D, K))
-    rvec_opt = result.x[:3]
-    t_opt = result.x[3:]
-    R_opt, _ = cv2.Rodrigues(rvec_opt)
-    t_opt = t_opt.reshape(3,1)
-    return R_opt, t_opt
+def optimize_extrinsic_eq9(pts3D,pts2D,f,R_fixed,t_init,cam_id,h):
+    # t만 최적화, R_fixed, f고정
+    res=least_squares(residual_extrinsic_eq9,t_init.ravel(),args=(pts3D,pts2D,f,R_fixed,cam_id,h))
+    t_opt=res.x.reshape(3,1)
+    return t_opt
 
-def compute_reprojection_error(pts3D, pts2D, R, t, K):
-    pts3D_h = np.hstack([pts3D, np.ones((pts3D.shape[0],1))])
-    RT = np.hstack((R, t))
-    proj = (K @ RT @ pts3D_h.T).T
-    proj_2D = proj[:, :2] / proj[:, 2, None]
-    errors = np.sqrt(np.sum((proj_2D - pts2D)**2, axis=1))
-    return np.mean(errors)
+def compute_error(pts3D,pts2D,R,t,f):
+    K=K_from_f(f)
+    Xh=np.hstack([pts3D,np.ones((len(pts3D),1))])
+    RT=np.hstack((R,t))
+    proj=(K@RT@Xh.T).T
+    proj2D=proj[:,:2]/proj[:,2,None]
+    err=np.sqrt(np.sum((proj2D-pts2D)**2,axis=1))
+    return np.mean(err)
 
-def joint_optimization(inlier_pts_cam0, inlier_pts_cam1, K0, K, R, t, image_size, max_iter=10):
-    for i in range(max_iter):
-        pts3D = triangulate_points(K0, K, R, t, inlier_pts_cam0, inlier_pts_cam1)
-        err_before = compute_reprojection_error(pts3D, inlier_pts_cam1, R, t, K)
-        print(f"Iteration {i} - Before extrinsic optimization: Reprojection error = {err_before:.4f}")
-        
-        R, t = optimize_extrinsic_parameters(pts3D, inlier_pts_cam1, K, R, t)
-        
-        pts3D = triangulate_points(K0, K, R, t, inlier_pts_cam0, inlier_pts_cam1)
-        err_after_ext = compute_reprojection_error(pts3D, inlier_pts_cam1, R, t, K)
-        print(f"Iteration {i} - After extrinsic optimization: Reprojection error = {err_after_ext:.4f}")
-        
-        K = optimize_intrinsic_parameters(pts3D, inlier_pts_cam1, R, t, K, image_size)
-        
-        pts3D = triangulate_points(K0, K, R, t, inlier_pts_cam0, inlier_pts_cam1)
-        err_after_int = compute_reprojection_error(pts3D, inlier_pts_cam1, R, t, K)
-        print(f"Iteration {i} - After intrinsic optimization: Reprojection error = {err_after_int:.4f}\n")
-        
-    return K, R, t
+def extract_points_for_two_cameras(paired_keypoints_list, camA, camB):
+    ptsA, ptsB = [], []
+    for frame_kps in paired_keypoints_list:
+        for kp_idx, cams_dict in frame_kps.items():
+            if camA in cams_dict and camB in cams_dict:
+                ptsA.append(cams_dict[camA])
+                ptsB.append(cams_dict[camB])
+    return np.array(ptsA,np.float32), np.array(ptsB,np.float32)
 
-# 파이프라인 수행
-pts_cam0, pts_cam1 = extract_correspondences_for_binocular(paired_keypoints_list, "json1", "json2")
-F, mask = compute_fundamental_matrix(pts_cam0, pts_cam1)
-inlier_pts_cam0 = pts_cam0[mask.ravel()==1]
-inlier_pts_cam1 = pts_cam1[mask.ravel()==1]
+def extract_points_for_single_camera(paired_keypoints_list, reference_pts0, reference_pts1, cam_name):
+    pts_i = []
+    for frame_kps in paired_keypoints_list:
+        for kp_idx, cams_dict in frame_kps.items():
+            if ("json1" in cams_dict and "json2" in cams_dict and cam_name in cams_dict):
+                pts_i.append(cams_dict[cam_name])
+    min_len = min(len(reference_pts0), len(pts_i))
+    pts_i = pts_i[:min_len]
+    return np.array(pts_i, np.float32)
 
-K0 = Ks[0]
-K1_ = Ks[1]
+def initialize_camera_i(i, cam_name, paired_keypoints_list, pts_cam0, pts_cam1, R_fixed, t_fixed, points_3D, f_init):
+    # camera i initialization: solvePnP -> extrinsic(opt t) -> intrinsic(opt f)
+    print(f"\n[INFO] Initializing camera {i} ({cam_name})...")
+    pts2D_i = extract_points_for_single_camera(paired_keypoints_list, pts_cam0, pts_cam1, cam_name)
+    if len(pts2D_i)<6:
+        print(f"[WARN] Not enough points for camera {i} ({cam_name})")
+        return f_init, R_fixed, t_fixed[i], pts2D_i, points_3D
+    print(f"[DEBUG] Extracted {len(pts2D_i)} points for camera {i}")
 
-E = compute_essential_matrix(F, K0, K1_)
-R, t, _ = recover_extrinsic_parameters(E, K0, inlier_pts_cam0, inlier_pts_cam1)
+    min_len = min(len(points_3D), len(pts2D_i))
+    pts3D = points_3D[:min_len]
+    pts2D_i = pts2D_i[:min_len]
 
-points_3D = triangulate_points(K0, K1_, R, t, inlier_pts_cam0, inlier_pts_cam1)
-K1_optimized = optimize_intrinsic_parameters(points_3D, inlier_pts_cam1, R, t, K1_, image_size)
-K1_final, R_final, t_final = joint_optimization(inlier_pts_cam0, inlier_pts_cam1, K0, K1_optimized, R, t, image_size)
+    # 초기 extrinsic: 회전은 고정(초기 R), 번역 solvePnP로 초기화
+    # 여기서는 회전을 초기 R_fixed[i]로부터 가져오지 않고 solvePnP로 얻은 R_i를 무시하고 R_fixed 사용
+    # 왜냐하면 R 고정 필요. 여기서는 R_fixed[i]를 초기 R이라 가정.
+    # 첫 camera0: R=I, t=0, 나머지도 초기 설정 필요(여기서는 임의로 첫 initialization 후 R고정)
+    if i==0:
+        # 기준 카메라 t=0, R=I
+        R_i = R_fixed[i]
+        t_i = t_fixed[i]
+    else:
+        # solvePnP
+        retval,rvec_i,tvec_i=cv2.solvePnP(pts3D,pts2D_i,K_from_f(f_init),None)
+        R_i,_=cv2.Rodrigues(rvec_i)
+        # R고정: R_i <- R_fixed[i]
+        R_i=R_fixed[i]
+        t_i=tvec_i
 
-print("Camera 1 final parameters:")
-print("K1_final:\n", K1_final)
-print("R_final:\n", R_final)
-print("t_final:\n", t_final)
+    print(f"[DEBUG] Initial R,t for camera {i}:\nR:\n{R_i}\nt:\n{t_i}")
 
-###################### Additional Code for (3) Parameter initialization for other cameras ############################
-def extract_2D_points_for_camera_i(paired_keypoints_list, cam_name, inlier_pts_cam0, inlier_pts_cam1):
-    pts2D_i = []
-    # 매칭 시 cam0,cam1에 해당하는 점과 동일한 점을 가진 frame을 찾아 cam i 포인트 추출
-    # 약간의 오차 허용을 위해 소수점 비교 시 threshold 사용
-    eps = 1e-3
-    # inlier_pts_cam0, inlier_pts_cam1 길이만큼 반복
-    for (x0, y0), (x1, y1) in zip(inlier_pts_cam0, inlier_pts_cam1):
-        found = False
-        for frame_kps in paired_keypoints_list:
-            for kp_idx, cams_dict in frame_kps.items():
-                if ("json1" in cams_dict and "json2" in cams_dict):
-                    c0 = cams_dict["json1"]
-                    c1 = cams_dict["json2"]
-                    if abs(c0[0]-x0)<eps and abs(c0[1]-y0)<eps and abs(c1[0]-x1)<eps and abs(c1[1]-y1)<eps:
-                        if cam_name in cams_dict:
-                            pts2D_i.append(cams_dict[cam_name])
-                            found = True
-                            break
-            if found:
-                break
-    pts2D_i = np.array(pts2D_i, dtype=np.float32)
-    return pts2D_i
+    h=10.0
+    if i==0:
+        # ref cam: no extrinsic update(t=0)
+        pass
+    elif i==1:
+        t_i=optimize_extrinsic_eq9(pts3D,pts2D_i,f_init,R_i,t_i,cam_id=1,h=h)
+    else:
+        t_i=optimize_extrinsic_eq9(pts3D,pts2D_i,f_init,R_i,t_i,cam_id=i,h=0.0)
 
-def initialize_camera_i(i, cam_name, K0, K_ref, R_ref, t_ref, points_3D, inlier_pts_cam0, inlier_pts_cam1):
-    """
-    camera i를 초기화하는 함수.
-    여기서는 간소하게 camera i에 대한 pts2D를 추출 후 solvePnP 적용.
-    """
-    K_i_init = Ks[i]
-    pts2D_i = extract_2D_points_for_camera_i(paired_keypoints_list, cam_name, inlier_pts_cam0, inlier_pts_cam1)
-    print(f"Extracted {pts2D_i.shape[0]} points for camera {i} ({cam_name})")
-    
-    
-    if pts2D_i.shape[0] < 6:
-        print(f"Not enough points to initialize camera {i} ({cam_name})")
-        return K_i_init, np.eye(3), np.zeros((3,1))
-    
-    retval, rvec_i, tvec_i = cv2.solvePnP(points_3D, pts2D_i, K_i_init, None)
-    R_i, _ = cv2.Rodrigues(rvec_i)
-    t_i = tvec_i
-    print(f"Initial extrinsic parameters for camera {i} ({cam_name}):")
-    print("R_i:\n", R_i)
-    print("t_i:\n", t_i)
-    
-    # Extrinsic 최적화
-    R_i, t_i = optimize_extrinsic_parameters(points_3D, pts2D_i, K_i_init, R_i, t_i)
-    
-    # Intrinsic 최적화
-    K_i_optimized = optimize_intrinsic_parameters(points_3D, pts2D_i, R_i, t_i, K_i_init, image_size)
-    
-    return K_i_optimized, R_i, t_i
+    f_opt=optimize_intrinsic_f(pts3D,pts2D_i,R_i,t_i,f_init,image_size)
+    print(f"[INFO] Camera {i} ({cam_name}) initialization done.")
+    return f_opt,R_i,t_i,pts2D_i,pts3D
 
-# Camera0,1은 이미 초기화 끝남 (K0, K1_final, R_final, t_final)
-# Camera2,3 초기화
-cam2_name = "json3"
-cam3_name = "json4"
+#############################################
+# 메인 실행부
+cam_dirs = [
+    r'C:\Users\gns15\OneDrive\Desktop\Calibration_with_keypoints\cal_json1',
+    r'C:\Users\gns15\OneDrive\Desktop\Calibration_with_keypoints\cal_json2',
+    r'C:\Users\gns15\OneDrive\Desktop\Calibration_with_keypoints\cal_json3',
+    r'C:\Users\gns15\OneDrive\Desktop\Calibration_with_keypoints\cal_json4'
+]
 
-K2_final, R2_final, t2_final = initialize_camera_i(2, cam2_name, K0, K1_final, R_final, t_final, points_3D, inlier_pts_cam0, inlier_pts_cam1)
-K3_final, R3_final, t3_final = initialize_camera_i(3, cam3_name, K0, K1_final, R_final, t_final, points_3D, inlier_pts_cam0, inlier_pts_cam1)
+paired_keypoints_list=extract_high_confidence_keypoints(cam_dirs,0.55)
 
-print("Camera 2 initialization done:")
-print("K2:\n", K2_final)
-print("R2:\n", R2_final)
-print("t2:\n", t2_final)
+pts_cam0, pts_cam1 = extract_points_for_two_cameras(paired_keypoints_list,"json1","json2")
+F,mask=compute_fundamental_matrix(pts_cam0,pts_cam1)
 
-print("Camera 3 initialization done:")
-print("K3:\n", K3_final)
-print("R3:\n", R3_final)
-print("t3:\n", t3_final)
+# 초기 R,t
+R_init=np.eye(3)
+t_init=np.zeros((3,1))
+K0=K_from_f(f_init)
+K1=K_from_f(f_init)
+
+E=compute_essential_matrix(F,K0,K1)
+R,t,_=recover_extrinsic_parameters(E,K0,pts_cam0,pts_cam1)
+# 기준: camera0: R0=I, t0=0
+R_fixed=[np.eye(3), R, R, R] # 초기 R들(추정후 고정)
+t_fixed=[np.zeros((3,1)), t, np.zeros((3,1)), np.zeros((3,1))] # cam1은 t로 시작, cam2,3 나중에 solvePnP후 업데이트
+
+points_3D=triangulate_points(K0,K1,R,t,pts_cam0,pts_cam1)
+
+# camera0은 ref, f_init 그대로, R0=I,t0=0
+f_list=[f_init, f_init, f_init, f_init]
+f_list[0]=f_init
+# cam1 init
+f_list[1],R_fixed[1],t_fixed[1],pts2D_cam1_,pts3D_cam1_=initialize_camera_i(1,"json2",paired_keypoints_list,pts_cam0,pts_cam1,R_fixed,t_fixed,points_3D,f_init)
+# cam2 init
+f_list[2],R_fixed[2],t_fixed[2],pts2D_cam2,pts3D_cam2=initialize_camera_i(2,"json3",paired_keypoints_list,pts_cam0,pts_cam1,R_fixed,t_fixed,points_3D,f_init)
+# cam3 init
+f_list[3],R_fixed[3],t_fixed[3],pts2D_cam3,pts3D_cam3=initialize_camera_i(3,"json4",paired_keypoints_list,pts_cam0,pts_cam1,R_fixed,t_fixed,points_3D,f_init)
 
 print("All cameras initialized.")
+
+# 이후 모든 카메라 Extrinsic, Intrinsic 순차 최적화 루프
+# Extrinsic: cam1에 penalty, cam2, cam3 no penalty, cam0고정
+# Intrinsic: 모든 cam f 최적화
+def extrinsic_all(pts0,pts1,pts2D_cams, R_fixed, t_fixed, f_list, h=10.0):
+    # 모든 카메라 번역 최적화
+    pts3D=triangulate_points(K_from_f(f_list[0]),K_from_f(f_list[1]),R_fixed[1],t_fixed[1],pts0,pts1)
+    # cam1
+    t_fixed[1]=optimize_extrinsic_eq9(pts3D,pts2D_cams[1],f_list[1],R_fixed[1],t_fixed[1],1,h)
+    # cam2
+    min2 = min(len(pts3D), len(pts2D_cams[2]))
+    t_fixed[2]=optimize_extrinsic_eq9(pts3D[:min2],pts2D_cams[2][:min2],f_list[2],R_fixed[2],t_fixed[2],2,0.0)
+    # cam3
+    min3 = min(len(pts3D), len(pts2D_cams[3]))
+    t_fixed[3]=optimize_extrinsic_eq9(pts3D[:min3],pts2D_cams[3][:min3],f_list[3],R_fixed[3],t_fixed[3],3,0.0)
+    return t_fixed
+
+def intrinsic_all(pts0,pts1,pts2D_cams,R_fixed,t_fixed,f_list):
+    pts3D=triangulate_points(K_from_f(f_list[0]),K_from_f(f_list[1]),R_fixed[1],t_fixed[1],pts0,pts1)
+    for cid in [0,1,2,3]:
+        min_len = min(len(pts3D), len(pts2D_cams[cid]))
+        f_list[cid]=optimize_intrinsic_f(pts3D[:min_len],pts2D_cams[cid][:min_len],R_fixed[cid],t_fixed[cid],f_list[cid],image_size)
+    return f_list
+
+pts2D_cams = {
+    0: pts_cam0[:len(points_3D)],
+    1: pts_cam1[:len(points_3D)],
+    2: pts2D_cam2[:len(points_3D)],
+    3: pts2D_cam3[:len(points_3D)]
+}
+
+print("\n[INFO] Full multi-camera optimization loop:")
+for i in range(5):
+    t_fixed=extrinsic_all(pts_cam0,pts_cam1,pts2D_cams,R_fixed,t_fixed,f_list,h=10.0)
+    f_list=intrinsic_all(pts_cam0,pts_cam1,pts2D_cams,R_fixed,t_fixed,f_list)
+    pts3D_all=triangulate_points(K_from_f(f_list[0]),K_from_f(f_list[1]),R_fixed[1],t_fixed[1],pts_cam0,pts_cam1)
+    err=compute_error(pts3D_all,pts_cam1,R_fixed[1],t_fixed[1],f_list[1])
+    print(f"Iteration {i}, avg error: {err:.4f}")
+
+print("All cameras fully optimized with fixed principal point, fixed rotation, fixed ref cam at origin, and only f optimized according to eq(5) and eq(9).")
+
+
+print("\n[FINAL RESULTS] Camera parameters after full optimization:")
+for cam_idx in range(4):
+    print(f"\nCamera {cam_idx} (json{cam_idx+1}):")
+    print("Intrinsic matrix K:")
+    print(Ks[cam_idx])
+    if cam_idx == 0:
+        print("Extrinsic parameters (Reference camera):")
+        print("R:\n", np.eye(3))
+        print("t:\n", np.zeros((3,1)))
+    else:
+        print("Extrinsic parameters:")
+        print("R:\n", R if cam_idx == 1 else R)  # All cameras share same R relative to cam0
+        print("t:\n", t_list[cam_idx])
+    
+print("\nReprojection errors:")
+errors = {0: None}  # Reference camera has no error
+for cam_idx in range(4):  # We have 4 cameras (0-3)
+    if cam_idx == 0:
+        continue  # Skip reference camera
+    pts3D = triangulate_points(K0, Ks[cam_idx], R, t_list[cam_idx], pts_cam0, pts2D_list[cam_idx])
+    err = compute_error(pts3D, pts2D_list[cam_idx], R, t_list[cam_idx], Ks[cam_idx])
+    errors[cam_idx] = err
+    print(f"Camera {cam_idx} (json{cam_idx+1}): {err:.4f} pixels")
+
+print("\nAll cameras fully optimized with eq(5) and eq(9).")
+
+# Save calibration results to TOML file
+from write_to_toml_v2 import write_calib_to_toml
+write_calib_to_toml(Ks, R, t_list, errors, image_size=image_size, output_file="Calib.toml")
+print("\nCalibration results saved to Calib.toml")
