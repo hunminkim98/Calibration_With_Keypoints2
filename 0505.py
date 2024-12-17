@@ -1,3 +1,4 @@
+from calendar import c
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
@@ -323,7 +324,7 @@ def compute_intrinsic_optimization_loss(x, points_3d, keypoints_detected, R, t):
         total_loss += loss
 
     mean_loss = total_loss / valid_keypoints_count if valid_keypoints_count > 0 else 0
-    print(f"mear_loss of intrinsic : {mean_loss}")
+    # print(f"mear_loss of intrinsic : {mean_loss}")
     return mean_loss
 
 def optimize_intrinsic_parameters(points_3d, keypoints_detected, K, R, t):
@@ -386,10 +387,10 @@ def compute_extrinsic_optimization_loss(x, ext_K, points_3d, points_2d, ext_R, P
     Returns:
     - The mean reprojection error.
     """
-    
+
     # Calculate reprojection error using the existing function
     mean_error = compute_reprojection_error(points_3d, points_2d, P2)
-    print(f"mean_error of extrinsic : {mean_error}")
+    # print(f"mean_error of extrinsic : {mean_error}")
 
     return mean_error
 
@@ -420,10 +421,13 @@ def optimize_extrinsic_parameters(points_3d, other_cameras_keypoints, ext_K, ext
 ###################### Function of Extrinsic parameters optimisation ############################
 
 
-###################### Initialization ############################
+############################################
+####### BINOCULAR STEREO CALIBRATION #######
+############################################
+
 print("Starting binocular stereo calibration...")
 # Initialize variables
-num_iterations = 3  # Single iteration count replacing inner and outer iterations
+num_iterations = 1  # Single iteration count replacing inner and outer iterations
 optimization_results = {}
 all_best_results = {}
 
@@ -463,6 +467,7 @@ for j, K in enumerate(Ks):
 
     fundamental_matrices[(1, j + 1)] = F
     camera_pair_key = (1, j + 1)
+    print(f"Camera pair key: {camera_pair_key}")
     
     paired_keypoints = inlier_pairs_list[j - 1]
     F = fundamental_matrices[(1, j + 1)]
@@ -533,87 +538,81 @@ for j, K in enumerate(Ks):
     # save initial results
     write_calib_to_toml(all_best_results)
 
-####################################################
-##########EXTRINSIC PARAMETER OPTIMIZATION##########
-####################################################
+############################################
+####### MULTI-CAMERA CALIBRATION ###########
+############################################
 
-########################################
-####### Multi-camera calibration #######
-########################################
+print("Starting multi-camera calibration...")
 
-# N = 20 # how many times to run the optimization
+iteration = 5
 
-# for i, K in enumerate(Ks):
-#     if i == 0:  # skip the reference camera
-#         continue
+# Get first pair in the all_best_results dictionary (Camera pair key: (1, 2))
+first_pair_key = list(all_best_results.keys())[0]
+first_pair = all_best_results[first_pair_key]
+first_cam_R = first_pair['R']
+first_cam_t = first_pair['t']
+first_cam_K = first_pair['K2']
+frrst_cam_P = cam_create_projection_matrix(first_cam_K, first_cam_R, first_cam_t)
+
+# Get reference 3D structure from cam0 & cam1
+reference_points_3d = triangulate_points(inlier_pairs_list[0], P1, P2)
+print(f"Number of reference 3D points: {len(reference_points_3d)}")
+
+# Optimize other cameras using the reference 3D structure
+for cam_idx in range(2, len(Ks)+1):  # Starting from cam2
+    print(f"\nOptimizing camera {cam_idx}...")
     
-#     # keypoints for optimization
-#     other_keypoints_detected = inlier2_list[i-1] # use the keypoints for the other camera
-#     paired_keypoints_list_multi = inlier_pairs_list[i-1] 
+    # Get initial parameters for current camera
+    current_pair_key = (1, cam_idx)  # Pair with reference camera
+    if current_pair_key in all_best_results:
+        current_pair = all_best_results[current_pair_key]
+        current_K = current_pair['K2']
+        current_R = current_pair['R']
+        current_t = current_pair['t']
+    else:
+        print(f"Warning: No initial parameters found for camera {cam_idx}")
+        continue
+    
+    # Get 2D keypoints for current camera
+    current_keypoints = inlier_pairs_list[cam_idx - 2]
 
-#     pair_key = (1, i+1) # pair key
-#     print(f"calibrating camera {i+1}...")
+    # Create initial projection matrix for current camera
+    current_P = cam_create_projection_matrix(current_K, current_R, current_t)
+    
+    # Calculate initial reprojection error
+    initial_error = compute_reprojection_error(reference_points_3d, current_keypoints, current_P)
+    print(f"Initial reprojection error for camera {cam_idx}: {initial_error}")
+    
+    for i in range(iteration):
+        # Optimize extrinsic parameters
+        optimized_t = optimize_extrinsic_parameters(
+            reference_points_3d,
+            current_keypoints,
+            current_K,
+            current_R,
+            current_t,
+            current_P
+        )
+        
+        # Update camera parameters with optimized values
+        current_t = optimized_t
+        
+        # Create final projection matrix
+        final_P = cam_create_projection_matrix(current_K, current_R, current_t)
+        
+        # Calculate final reprojection error
+        final_error = compute_reprojection_error(reference_points_3d, current_keypoints, final_P)
+        print(f"Final reprojection error for camera {cam_idx}: {final_error}")
+        
+        # Update results
+        all_best_results[current_pair_key] = {
+            'K1': K1,
+            'K2': current_K,
+            'R': current_R,
+            't': current_t,
+            'error': final_error
+        }
 
-#     # import the best results for each camera pair
-#     ext_K = all_best_results[pair_key]['K2'] 
-#     ext_R = all_best_results[pair_key]['R']
-#     ext_t = all_best_results[pair_key]['t']
-#     ref_t = np.zeros(3)  # origin
-
-
-#     # projection matrix
-#     P1 = cam_create_projection_matrix(Ks[0], np.eye(3), ref_t)
-#     P2 = cam_create_projection_matrix(ext_K, ext_R, ext_t)
-
-#     # triangulate points
-#     points_3d = triangulate_points(paired_keypoints_list_multi, P1, P2) # initial 3D points
-#     before_optimization_error = compute_reprojection_error(points_3d, paired_keypoints_list_multi, P1, P2)
-#     print(f"camera {i+1} before optimization error: {before_optimization_error}")
-
-
-
-#     # Entrinsic and intrinsic parameter joint optimization
-#     for n in range(N):
-
-#         # extrinsic parameter optimization
-#         print(f"before optimization t vector: {ext_t}")
-#         optimized_t = optimize_extrinsic_parameters(points_3d, other_keypoints_detected, ext_K, ext_R, ext_t) # optimize extrinsic parameters
-#         ext_t = optimized_t # update t vector
-#         print(f"{n + 1}th optimized t vector: {ext_t}")
-
-#         N_P2 = cam_create_projection_matrix(ext_K, ext_R, ext_t) # update projection matrix
-#         ex_reprojection_error = compute_reprojection_error(points_3d, paired_keypoints_list_multi, P1, N_P2) # calculate the mean reprojection error
-#         print(f"{n + 1}th error in extrinsic optimization = {ex_reprojection_error}")
-
-#         # intrinsic parameter optimization
-#         points_3d = triangulate_points(paired_keypoints_list_multi, P1, N_P2) # update 3D points after extrinsic optimization
-#         ext_K_optimized = optimize_intrinsic_parameters(points_3d, other_keypoints_detected, ext_K, ext_R, ext_t) # optimize intrinsic parameters
-#         ext_K = ext_K_optimized # update intrinsic parameters
-#         # print(f"{n + 1}th optimized K matrix: {ext_K}")
-
-#         N_P2 = cam_create_projection_matrix(ext_K, ext_R, ext_t) # update projection matrix
-#         in_reprojection_error = compute_reprojection_error(points_3d, paired_keypoints_list_multi, P1, N_P2) # calculate the mean reprojection error
-#         print(f"{n + 1}th error in intrinsic optimization = {in_reprojection_error}")
-#         points_3d = triangulate_points(paired_keypoints_list_multi, P1, N_P2) # update 3D points after intrinsic optimization
-
-#     # save result after optimization
-#     all_best_results[pair_key]['t'] = ext_t
-#     all_best_results[pair_key]['K2'] = ext_K
-
-#     # ext_R matrix to rod vector
-#     ext_R_rod, _ = cv2.Rodrigues(ext_R)
-#     all_best_results[pair_key]['R'] = ext_R_rod
-
-# # print optimized results
-# for pair_key, results in all_best_results.items():
-#     print(f"Best results for {pair_key}:")
-#     print(f"- K2: {results['K2']}") # optimized intrinsic paramters
-#     print(f" rod R: {results['R']}") # optimized extrinsic paramters
-#     print(f"- t: {results['t']}") # optimized extrinsic paramters
-
-
-#################################################### intrinsic jointly optimization ####################################################
-
-####################################################
-##########EXTRINSIC PARAMETER OPTIMIZATION##########
-####################################################
+# Save final results
+write_calib_to_toml(all_best_results)
+print("\nMulti-camera calibration completed and results saved.")
