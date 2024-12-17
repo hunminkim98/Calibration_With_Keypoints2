@@ -46,15 +46,15 @@ def extract_high_confidence_keypoints(cam_dirs, confidence_threshold):
     return high_confidence_keypoints
 
 def compute_fundamental_matrix(pts1,pts2):
-    F, mask = cv2.findFundamentalMat(pts1, pts2, cv2.FM_RANSAC)
-    return F, mask
+    F, _ = cv2.findFundamentalMat(pts1, pts2, cv2.FM_RANSAC)
+    return F
 
 def compute_essential_matrix(F,K1,K2): 
     return K2.T@F@K1
 
 def recover_extrinsic_parameters(E,K1,pts1,pts2):
-    _, R,t,mask = cv2.recoverPose(E,pts1,pts2,K1)
-    return R,t,mask
+    _, R,t, _ = cv2.recoverPose(E,pts1,pts2,K1)
+    return R,t
 
 def triangulate_points(K1,K2,R,t,pts0,pts1):
     P0=K1@np.hstack((np.eye(3),np.zeros((3,1))))
@@ -170,7 +170,7 @@ cam_dirs = [
 paired_keypoints_list=extract_high_confidence_keypoints(cam_dirs,0.55)
 
 pts_cam0, pts_cam1 = extract_points_for_two_cameras(paired_keypoints_list,"json1","json2")
-F,mask=compute_fundamental_matrix(pts_cam0,pts_cam1)
+F =compute_fundamental_matrix(pts_cam0,pts_cam1)
 K0=Ks[0]
 K1_=Ks[1]
 

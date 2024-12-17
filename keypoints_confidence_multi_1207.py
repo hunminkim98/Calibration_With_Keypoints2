@@ -1,5 +1,15 @@
 import os
 import json
+import re
+
+def natural_sort_key(s):
+    '''
+    Sorts list of strings with numbers in natural order (alphabetical and numerical)
+    Example: ['item_1', 'item_2', 'item_10', 'stuff_1']
+    '''
+    s=str(s)
+    return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', s)]
+
 
 def extract_high_confidence_keypoints(cam_dirs, confidence_threshold):
     """
@@ -24,11 +34,12 @@ def extract_high_confidence_keypoints(cam_dirs, confidence_threshold):
     cam_files = {}
     for cam_dir in cam_dirs:
         cam_name = os.path.basename(cam_dir)
-        cam_files[cam_name] = sorted([os.path.join(cam_dir, f) for f in os.listdir(cam_dir) if f.endswith('.json')])
+        cam_files[cam_name] = sorted([os.path.join(cam_dir, f) for f in os.listdir(cam_dir) if f.endswith('.json')],
+                                   key=natural_sort_key)
         camera_keypoint_counts[cam_name] = 0  # 카메라별 카운터 초기화
     
     # Iterate over frames simultaneously for all cameras
-    for frame_files in zip(*cam_files.values()):
+    for frame_idx, frame_files in enumerate(zip(*cam_files.values()), start=0):  
         frame_keypoints = {}
         
         # Extract keypoints and confidence for each camera
@@ -54,7 +65,7 @@ def extract_high_confidence_keypoints(cam_dirs, confidence_threshold):
                         camera_keypoint_counts[cam] += 1
         
         if frame_keypoints:
-            high_confidence_keypoints.append(frame_keypoints)
+            high_confidence_keypoints.append({"frame": frame_idx, "keypoints": frame_keypoints})
     
     # 각 카메라별 추출된 키포인트 수 출력
     print("\nNumber of extracted keypoints per camera:")
