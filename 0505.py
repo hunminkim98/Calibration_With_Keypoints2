@@ -238,19 +238,18 @@ def plot_3d_points(points_3d):
 
     plt.show()
 
-def compute_reprojection_error(precomputed_points_3d, keypoints_detected, P1, P2):
+def compute_reprojection_error(precomputed_points_3d, keypoints_detected, P2):
     """
-    Computes the reprojection error for a set of paired keypoints using the given projection matrices
+    Computes the reprojection error for the second camera (P2) using the given projection matrices
     and precomputed 3D points.
 
     Args:
         precomputed_points_3d (list): List of precomputed 3D points as NumPy arrays.
         keypoints_detected (list): List of paired keypoints, each represented as a tuple (2D point in camera 1, 2D point in camera 2).
-        P1 (array-like): Camera projection matrix for the reference camera.
         P2 (array-like): Camera projection matrix for the other camera.
 
     Returns:
-        float: The mean reprojection error over all keypoints.
+        float: The mean reprojection error for the second camera.
     """
     total_error = 0
     total_points = 0
@@ -259,27 +258,22 @@ def compute_reprojection_error(precomputed_points_3d, keypoints_detected, P1, P2
     assert len(precomputed_points_3d) == len(keypoints_detected), "Number of 3D points and 2D keypoints must match"
 
     # Process each pair of 3D point and 2D keypoints
-    for point_3d, (point1, point2) in zip(precomputed_points_3d, keypoints_detected):
+    for point_3d, (_, point2) in zip(precomputed_points_3d, keypoints_detected):
         # Convert 3D point to homogeneous coordinates
         point_3d_homogeneous = np.append(point_3d.flatten(), 1)
 
-        # Reproject the 3D point to the 2D image plane for both cameras
-        point1_reprojected = P1 @ point_3d_homogeneous
-        point1_reprojected /= point1_reprojected[2]
-
+        # Reproject the 3D point to the 2D image plane for camera 2
         point2_reprojected = P2 @ point_3d_homogeneous
         point2_reprojected /= point2_reprojected[2]
 
-        # Compute reprojection errors for each camera's reprojected point
-        error1 = np.linalg.norm(point1_reprojected[:2] - np.array(point1))
+        # Compute reprojection error for camera 2's reprojected point
         error2 = np.linalg.norm(point2_reprojected[:2] - np.array(point2))
 
-        total_error += error1 + error2
-        total_points += 2
+        total_error += error2
+        total_points += 1
 
     mean_error = total_error / total_points if total_points > 0 else 0
     return mean_error
-
 
 ###################### Function of Intrinsics parameters optimisation ############################
 
@@ -329,7 +323,7 @@ def compute_intrinsic_optimization_loss(x, points_3d, keypoints_detected, R, t):
         total_loss += loss
 
     mean_loss = total_loss / valid_keypoints_count if valid_keypoints_count > 0 else 0
-    # print(f"mear_loss of intrinsic : {mean_loss}")
+    print(f"mear_loss of intrinsic : {mean_loss}")
     return mean_loss
 
 def optimize_intrinsic_parameters(points_3d, keypoints_detected, K, R, t):
@@ -374,68 +368,32 @@ def create_paired_inlier(inliers1, inliers2):
     """
     paired_inliers = [((p1[0], p1[1]), (p2[0], p2[1])) for p1, p2 in zip(inliers1, inliers2)]
     return paired_inliers
+
 ###################### Function of Intrinsics parameters optimisation ############################
 
 ###################### Function of Extrinsic parameters optimisation ############################
-def compute_extrinsic_optimization_loss(x, ext_K, points_3d, points_2d, ext_R):
+def compute_extrinsic_optimization_loss(x, ext_K, points_3d, points_2d, ext_R, P2):
     """
-    Computes the loss for the extrinsic parameters optimization.
+    Computes the loss for the extrinsic parameters optimization using reprojection error.
 
     Args:
-    - x: Extrinsic parameters to optimize.
+    - x: Extrinsic parameters to optimize (translation vector).
     - ext_K: Intrinsic parameters matrix.
     - points_3d: List of 3D points (triangulated human body joints).
     - points_2d: Original detected 2D keypoints.
     - ext_R: Rotation matrix.
-    - ext_t: Translation vector.
 
     Returns:
-    - The mean loss for the extrinsic parameters optimization.
+    - The mean reprojection error.
     """
-    f_x, f_y, u0, v0 = ext_K[0, 0], ext_K[1, 1], ext_K[0, 2], ext_K[1, 2]
-    dx = 1.0  # Pixel scaling factor dx (assumed to be 1 if not known)
-    dy = 1.0  # Pixel scaling factor dy (assumed to be 1 if not known)
-
-    # t vector from x
-    # print(f"Optimization variable x: {x}")
-    # t_magnitude = x[0]
-    # normalized_t = ext_t / np.linalg.norm(ext_t)
-    # recn_t = normalized_t * t_magnitude
-    # print(f"Reconstructed t: {recn_t}")
-    obj_t = x
-
-    total_loss = 0
-    valid_keypoints_count = 0  # Counter for counting the number of valid detected points
-
-
-    transformation_matrix = np.hstack((ext_R, obj_t.reshape(-1, 1)))  # transformation matrix
-    transformation_matrix = np.vstack((transformation_matrix, [0, 0, 0, 1]))  # homogeneous transformation matrix
     
-    # Make sure the number of 3D points matches the 2D keypoints
-    assert len(points_3d) == len(points_2d), "Number of 3D points and 2D keypoints must match"
+    # Calculate reprojection error using the existing function
+    mean_error = compute_reprojection_error(points_3d, points_2d, P2)
+    print(f"mean_error of extrinsic : {mean_error}")
 
-    # Process each point
-    for point_3d, detected_point in zip(points_3d, points_2d):
-        if not isinstance(detected_point, (list, tuple, np.ndarray)) or len(detected_point) != 2:
-            continue
-                
-        u_detected, v_detected = detected_point
-        valid_keypoints_count += 1
+    return mean_error
 
-        # Convert 3D point to homogeneous coordinates
-        point_3d_homogeneous = np.append(point_3d.flatten(), 1)
-        point_camera = transformation_matrix.dot(point_3d_homogeneous)
-        Xc, Yc, Zc = point_camera[:3]
-
-        # Compute the loss based on the difference between expected and detected points
-        loss = abs(Zc * u_detected - ((f_x / dx) * Xc + u0 * Zc)) + abs(Zc * v_detected - ((f_y / dy) * Yc + v0 * Zc))
-        total_loss += loss
-
-    mean_loss = total_loss / valid_keypoints_count if valid_keypoints_count > 0 else 0
-    # print(f"mear_loss of extrinsic : {mean_loss}")
-    return mean_loss
-
-def optimize_extrinsic_parameters(points_3d, other_cameras_keypoints, ext_K, ext_R, ext_t):
+def optimize_extrinsic_parameters(points_3d, other_cameras_keypoints, ext_K, ext_R, ext_t, P2):
     """
     Optimizes the extrinsic parameters using the given 3D points and detected keypoints.
 
@@ -450,19 +408,12 @@ def optimize_extrinsic_parameters(points_3d, other_cameras_keypoints, ext_K, ext
     - The optimized t vector.
     """
     # Create the initial guess for the extrinsic parameters (|T|) using the t vector magnitude
-    # x0 = np.array([np.linalg.norm(ext_t)])
     x0 = ext_t.flatten()
-    # print(f"Initial x0: {x0}")
 
     # Optimize the intrinsic parameters using the least squares method
-    result = least_squares(compute_extrinsic_optimization_loss, x0, args=(ext_K, points_3d, other_cameras_keypoints, ext_R), verbose=1, method='trf', diff_step=1e-8 , ftol=1e-12, max_nfev=150, xtol=1e-12, gtol=1e-12, x_scale='jac', loss='huber')
+    result = least_squares(compute_extrinsic_optimization_loss, x0, args=(ext_K, points_3d, other_cameras_keypoints, ext_R, P2), verbose=1, method='trf', diff_step=1e-8 , ftol=1e-12, max_nfev=150, xtol=1e-12, gtol=1e-12, x_scale='jac', loss='huber')
 
     optimized_t = result.x # optimized t vector
-    # print(f"Optimized t: {optimized_t}")
-    # Create the optimized extrinsic t vector
-    # t_magnitude = result.x[0]
-    # print(f"Optimized t magnitude: {t_magnitude}")
-    # t_optimized = ext_t / np.linalg.norm(ext_t) * t_magnitude
 
     return optimized_t
 
@@ -533,7 +484,7 @@ for j, K in enumerate(Ks):
     points_3d = triangulate_points(paired_keypoints, P1, P2)
 
     # initial reprojection error
-    reprojection_error = compute_reprojection_error(points_3d, paired_keypoints, P1, P2)
+    reprojection_error = compute_reprojection_error(points_3d, paired_keypoints, P2)
     print(f"Initial reprojection error: {reprojection_error}")
 
     # Single iteration loop for optimization
@@ -542,14 +493,14 @@ for j, K in enumerate(Ks):
         OPT_K = optimize_intrinsic_parameters(points_3d, points2, OPT_K, R_fixed, t_optimized)
         P2 = cam_create_projection_matrix(OPT_K, R_fixed, t_optimized)
         points_3d = triangulate_points(paired_keypoints, P1, P2)
-        reprojection_error = compute_reprojection_error(points_3d, paired_keypoints, P1, P2)
+        reprojection_error = compute_reprojection_error(points_3d, paired_keypoints, P2)
         print(f"Camera pair {camera_pair_key} iteration {iter_idx + 1}: intrinsic reprojection error: {reprojection_error}")
 
         # optimize extrinsic parameters, but intrinsic parameters are fixed
-        OPT_t = optimize_extrinsic_parameters(points_3d, points2, OPT_K, R_fixed, t_optimized)
+        OPT_t = optimize_extrinsic_parameters(points_3d, paired_keypoints, OPT_K, R_fixed, t_optimized, P2)
         P2 = cam_create_projection_matrix(OPT_K, R_fixed, OPT_t)
         points_3d = triangulate_points(paired_keypoints, P1, P2)
-        reprojection_error = compute_reprojection_error(points_3d, paired_keypoints, P1, P2)
+        reprojection_error = compute_reprojection_error(points_3d, paired_keypoints, P2)
         print(f"Camera pair {camera_pair_key} iteration {iter_idx + 1}: extrinsic reprojection error: {reprojection_error}")
 
         # update t
