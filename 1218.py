@@ -1,4 +1,3 @@
-from audioop import mul
 from re import T
 import numpy as np
 import cv2
@@ -14,6 +13,7 @@ from scipy.optimize import least_squares
 from keypoints_confidence_multi_1207 import extract_high_confidence_keypoints
 from write_to_toml_v2 import write_calib_to_toml
 from visualization import plot_all_camera_poses
+import matplotlib.animation as animation
 
 ################################
 # User-defined constants
@@ -139,7 +139,7 @@ def optimize_intrinsic_parameters(points_3d,points2d,R,t):
     # optimize only f
     x0=[f_init]
     res=least_squares(residual_intrinsic_eq5,x0,args=(points_3d, [pt[1] for pt in points2d],R,t,image_size),
-                      ftol=1e-12,xtol=1e-12,gtol=1e-12,loss='huber')
+                      method='trf', ftol=1e-12, xtol=1e-12, gtol=1e-12, loss='huber')
     f_opt=res.x[0]
     K_opt=K_from_f(f_opt)
     return K_opt
@@ -161,7 +161,7 @@ def residual_extrinsic_eq9(tvec, pts3D, pts2d, K, R, cam_id, h, multi):
         residuals.extend([u_est-u_obs,v_est-v_obs])
     # eq(9)
     if cam_id==2 and multi==True:
-        print(f"apply penalty: {h}")
+        # print(f"apply penalty: {h}")
         norm_t=np.linalg.norm(tvec)
         penalty=h*(norm_t-1.0)
         residuals.append(penalty)
@@ -171,7 +171,7 @@ def optimize_extrinsic_parameters(points_3d,points2d,K,R,t,cam_id=1,h=10.0,multi
     # t만 최적화
     x0=t.flatten()
     res=least_squares(residual_extrinsic_eq9,x0,args=(points_3d, points2d, K, R, cam_id, h, multi),
-                      ftol=1e-12,xtol=1e-12,gtol=1e-12,loss='huber')
+                      method='trf', ftol=1e-12, xtol=1e-12, gtol=1e-12, loss='huber')
     t_opt=res.x.reshape(3,1)
     return t_opt
 
@@ -180,11 +180,95 @@ def optimize_extrinsic_parameters(points_3d,points2d,K,R,t,cam_id=1,h=10.0,multi
 # Main code
 ###########################
 
-ref_cam_dir = r'C:\Users\5W555A\Desktop\Calibration_With_Keypoints2\cal_json1' # reference camera dir
-other_cam_dirs = [r'C:\Users\5W555A\Desktop\Calibration_With_Keypoints2\cal_json2', r'C:\Users\5W555A\Desktop\Calibration_With_Keypoints2\cal_json3', r'C:\Users\5W555A\Desktop\Calibration_With_Keypoints2\cal_json4']
+ref_cam_dir = r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\demo_lod\json1' # reference camera dir
+other_cam_dirs = [r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\demo_lod\json2', r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\demo_lod\json3', r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\demo_lod\json4']
+
+# ref_cam_dir = r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\cal_json1' # reference camera dir
+# other_cam_dirs = [r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\cal_json2', r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\cal_json3', r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\cal_json4']
+
 cam_dirs=[ref_cam_dir]+other_cam_dirs
-confidence_threshold=0.8
+confidence_threshold=0.6
 paired_keypoints_list=extract_high_confidence_keypoints(cam_dirs,confidence_threshold)
+print(f"paired_keypoints_list: {paired_keypoints_list[:1]}")
+
+# Animate keypoints across all frames
+def animate_keypoints(paired_keypoints_list, cam_dirs):
+    if not paired_keypoints_list:
+        print("No keypoints found!")
+        return
+    
+    n_cameras = len(cam_dirs)
+    
+    # Create figure and axes
+    fig, axes = plt.subplots(1, n_cameras, figsize=(5*n_cameras, 5))
+    if n_cameras == 1:
+        axes = [axes]
+    
+    # Initialize scatter plots
+    scatters = []
+    for idx, cam_dir in enumerate(cam_dirs):
+        cam_name = os.path.basename(cam_dir)
+        ax = axes[idx]
+        scatter = ax.scatter([], [], c='red', marker='o')
+        scatters.append(scatter)
+        
+        ax.set_title(f'Camera: {cam_name}')
+        ax.grid(True)
+        ax.invert_yaxis()
+    
+    # Find global min/max coordinates for consistent axis limits
+    x_min, x_max = float('inf'), float('-inf')
+    y_min, y_max = float('inf'), float('-inf')
+    
+    for frame in paired_keypoints_list:
+        keypoints = frame['keypoints']
+        for kp_data in keypoints.values():
+            for cam_name in kp_data:
+                x, y = kp_data[cam_name]
+                x_min = min(x_min, x)
+                x_max = max(x_max, x)
+                y_min = min(y_min, y)
+                y_max = max(y_max, y)
+    
+    padding = 100
+    for ax in axes:
+        ax.set_xlim(x_min - padding, x_max + padding)
+        ax.set_ylim(y_max + padding, y_min - padding)
+    
+    # Animation update function
+    def update(frame_idx):
+        frame = paired_keypoints_list[frame_idx]
+        frame_num = frame['frame']
+        
+        for cam_idx, cam_dir in enumerate(cam_dirs):
+            cam_name = os.path.basename(cam_dir)
+            x_coords = []
+            y_coords = []
+            
+            keypoints = frame['keypoints']
+            for kp_idx, kp_data in keypoints.items():
+                if cam_name in kp_data:
+                    x, y = kp_data[cam_name]
+                    x_coords.append(x)
+                    y_coords.append(y)
+            
+            scatters[cam_idx].set_offsets(np.c_[x_coords, y_coords])
+            axes[cam_idx].set_title(f'Camera: {cam_name}\nFrame #{frame_num}')
+        
+        return scatters
+    
+    # Create animation
+    anim = animation.FuncAnimation(
+        fig, update, frames=len(paired_keypoints_list),
+        interval=1, blit=False, repeat=True
+    )
+    
+    plt.tight_layout()
+    plt.show()
+
+# Call the animation function
+animate_keypoints(paired_keypoints_list, cam_dirs)
+
 
 Fix_K1=K_from_f(f_init) # ref cam K
 P1=cam_create_projection_matrix(Fix_K1, ref_R, ref_t) # cam0 fixed
@@ -201,8 +285,8 @@ print("Starting binocular stereo calibration...")
 for j,K_init in enumerate(Ks):
     if j==0:
         continue
-    ref_cam='cal_json1'
-    target_cam=f'cal_json{j+1}'
+    ref_cam='json1'
+    target_cam=f'json{j+1}'
     points1,points2=unpack_keypoints(paired_keypoints_list,ref_cam,target_cam)
     if len(points1)==0:
         continue

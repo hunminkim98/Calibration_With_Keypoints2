@@ -40,7 +40,7 @@ def write_calib_to_toml(all_best_results, image_size=[3840.0, 2160.0], output_fi
     camera_data.add("matrix", array(nparray_to_list(ref_K)))
     camera_data.add("distortions", array([0.0, 0.0, 0.0, 0.0]))
     camera_data.add("rotation", array([0.0, 0.0, 0.0]))
-    camera_data.add("translation", array([0.0, 0.0, 1.0]))
+    camera_data.add("translation", array([0.0, 0.0, 0.0]))
     camera_data.add("fisheye", False)
     doc.add("int_cam1_img", camera_data)
     
