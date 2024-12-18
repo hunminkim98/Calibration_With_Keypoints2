@@ -1,3 +1,5 @@
+from audioop import mul
+from re import T
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
@@ -144,8 +146,8 @@ def optimize_intrinsic_parameters(points_3d,points2d,R,t):
 
 ###########################
 # eq(9) for extrinsic:
-# optimize t only, R fixed, cam_id=1일때 penalty: h*(|t|-1)
-def residual_extrinsic_eq9(tvec, pts3D, pts2d, K, R, cam_id,h):
+# optimize t only, R fixed, cam_id=2일때 penalty: h*(|t|-1)
+def residual_extrinsic_eq9(tvec, pts3D, pts2d, K, R, cam_id, h, multi):
     tvec=tvec.reshape(3,1)
     # reprojection
     P=cam_create_projection_matrix(K,R,tvec)
@@ -158,16 +160,17 @@ def residual_extrinsic_eq9(tvec, pts3D, pts2d, K, R, cam_id,h):
         u_obs,v_obs=p2
         residuals.extend([u_est-u_obs,v_est-v_obs])
     # eq(9)
-    if cam_id==1:
+    if cam_id==2 and multi==True:
+        print(f"apply penalty: {h}")
         norm_t=np.linalg.norm(tvec)
         penalty=h*(norm_t-1.0)
         residuals.append(penalty)
     return np.array(residuals)
 
-def optimize_extrinsic_parameters(points_3d,points2d,K,R,t,cam_id=1,h=10.0):
+def optimize_extrinsic_parameters(points_3d,points2d,K,R,t,cam_id=1,h=10.0,multi=False):
     # t만 최적화
     x0=t.flatten()
-    res=least_squares(residual_extrinsic_eq9,x0,args=(points_3d,points2d,K,R,cam_id,h),
+    res=least_squares(residual_extrinsic_eq9,x0,args=(points_3d, points2d, K, R, cam_id, h, multi),
                       ftol=1e-12,xtol=1e-12,gtol=1e-12,loss='huber')
     t_opt=res.x.reshape(3,1)
     return t_opt
@@ -192,6 +195,7 @@ inlier_pairs_list=[]
 fundamental_matrices={}
 
 iteration_binocular = 10
+is_multi_camera = False
 
 print("Starting binocular stereo calibration...")
 for j,K_init in enumerate(Ks):
@@ -236,7 +240,7 @@ for j,K_init in enumerate(Ks):
         # optimize extrinsic (t only, eq(9) if cam_id=1, here cam_id>1 means no penalty)
         # cam_id=1이면 penalty, 아니면 h=0.0 (하지만, binocular 에서는 panalty 없음)
         h = 0.0
-        t_opt=optimize_extrinsic_parameters(points_3d,inlier_pair,K2_,R_rel,t_rel,cam_id,h)
+        t_opt=optimize_extrinsic_parameters(points_3d, inlier_pair, K2_, R_rel, t_rel, cam_id, h, multi=is_multi_camera)
         P2=cam_create_projection_matrix(K2_,R_rel,t_opt)
         points_3d=triangulate_points(inlier_pair,P1,P2)
         err_ext=compute_reprojection_error(points_3d,inlier_pair,P2)
@@ -261,6 +265,7 @@ cam_create_projection_matrix(all_best_results[(1,2)]['K2'],all_best_results[(1,2
 print(f"Number of reference 3D points: {len(reference_points_3d)}")
 
 iteration=5
+is_multi_camera = True
 
 # Store all camera poses history
 all_camera_poses_history = {}
@@ -285,7 +290,7 @@ for cam_idx in range(2,len(Ks)+1):
     h=10.0 if cam_idx==2 else 0.0
     for i in range(iteration):
         # extrinsic opt
-        current_t=optimize_extrinsic_parameters(reference_points_3d,current_keypoints,current_K,current_R,current_t,cam_idx,h)
+        current_t=optimize_extrinsic_parameters(reference_points_3d, current_keypoints, current_K, current_R, current_t, cam_idx,h, multi=is_multi_camera)
         current_P=cam_create_projection_matrix(current_K,current_R,current_t)
         final_err=compute_reprojection_error(reference_points_3d,current_keypoints,current_P)
         print(f"Iteration {i}, camera {cam_idx}, extrinsic opt error: {final_err}")
