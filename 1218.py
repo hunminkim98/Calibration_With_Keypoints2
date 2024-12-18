@@ -33,8 +33,8 @@ K1 = np.array([
     [ 0.0, 1826.6675222017589, 1079.5],
     [ 0.0, 0.0, 1.0]
 ])
-f_init = K1[0,0]
-# 초기에는 f만 쓸 것이므로 u0,v0고정, f_init 사용
+f_init = 1824.6097978600892  # 초기 f를 기존 카메라 Intrinsic fx 값으로 설정
+
 def K_from_f(f):
     return np.array([[f, 0, u0],
                      [0, f, v0],
@@ -64,11 +64,34 @@ def compute_fundamental_matrix(paired_points):
 def compute_essential_matrix(F,K1,K2):
     return K2.T @ F @ K1
 
+# def recover_pose_from_essential_matrix(E,pts1,pts2,K):
+#     pts1 = pts1.astype(np.float32)
+#     pts2 = pts2.astype(np.float32)
+#     _, R,t,mask = cv2.recoverPose(E,pts1,pts2,K)
+#     return R,t,mask
+
 def recover_pose_from_essential_matrix(E,pts1,pts2,K):
-    pts1 = pts1.astype(np.float32)
-    pts2 = pts2.astype(np.float32)
-    _, R,t,mask = cv2.recoverPose(E,pts1,pts2,K)
-    return R,t,mask
+    # 수동으로 4개 해를 구해 positive depth가 가장 높은 해 선택
+    R1,R2,t = cv2.decomposeEssentialMat(E)
+    candidates = []
+    for R_ in [R1,R2]:
+        for sign in [1,-1]:
+            t_ = t*sign
+            score = positive_depth_count(R_,t_,pts1,pts2,K)
+            candidates.append((score,R_,t_))
+    candidates.sort(key=lambda x:x[0],reverse=True)
+    best = candidates[0]
+    return best[1], best[2], None
+    
+def positive_depth_count(R, t, pts1, pts2, K):
+    # Triangulate a few points to check positive depth ratio
+    P1 = K@np.hstack((np.eye(3), np.zeros((3,1))))
+    P2 = K@np.hstack((R,t))
+    pts1_ = pts1[:10].astype(np.float64)
+    pts2_ = pts2[:10].astype(np.float64)
+    Xh = cv2.triangulatePoints(P1,P2,pts1_.T,pts2_.T)
+    X = Xh[:3]/Xh[3]
+    return np.sum(X[2]>0)/X.shape[1]
 
 def triangulate_points(paired_keypoints_list, P1, P2):
     points_3d = []
@@ -175,22 +198,6 @@ def optimize_extrinsic_parameters(points_3d,points2d,K,R,t,cam_id=1,h=10.0,multi
     t_opt=res.x.reshape(3,1)
     return t_opt
 
-
-###########################
-# Main code
-###########################
-
-ref_cam_dir = r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\demo_lod\json1' # reference camera dir
-other_cam_dirs = [r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\demo_lod\json2', r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\demo_lod\json3', r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\demo_lod\json4']
-
-# ref_cam_dir = r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\cal_json1' # reference camera dir
-# other_cam_dirs = [r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\cal_json2', r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\cal_json3', r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\cal_json4']
-
-cam_dirs=[ref_cam_dir]+other_cam_dirs
-confidence_threshold=0.6
-paired_keypoints_list=extract_high_confidence_keypoints(cam_dirs,confidence_threshold)
-print(f"paired_keypoints_list: {paired_keypoints_list[:1]}")
-
 # Animate keypoints across all frames
 def animate_keypoints(paired_keypoints_list, cam_dirs):
     if not paired_keypoints_list:
@@ -265,6 +272,20 @@ def animate_keypoints(paired_keypoints_list, cam_dirs):
     
     plt.tight_layout()
     plt.show()
+###########################
+# Main code
+###########################
+
+ref_cam_dir = r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\demo_lod\json1' # reference camera dir
+other_cam_dirs = [r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\demo_lod\json2', r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\demo_lod\json3', r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\demo_lod\json4']
+
+# ref_cam_dir = r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\cal_json1' # reference camera dir
+# other_cam_dirs = [r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\cal_json2', r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\cal_json3', r'C:\Users\5W555A\Desktop\Calibration_with_keypoints\cal_json4']
+
+cam_dirs=[ref_cam_dir]+other_cam_dirs
+confidence_threshold=0.8
+paired_keypoints_list=extract_high_confidence_keypoints(cam_dirs,confidence_threshold)
+print(f"paired_keypoints_list: {paired_keypoints_list[:1]}")
 
 # Call the animation function
 animate_keypoints(paired_keypoints_list, cam_dirs)
